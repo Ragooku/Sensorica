@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "author": "Roman Zhitkov",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 111.8,
+      "left": 163.2,
+      "attrs": { "color": "green", "xray": "1" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 71.15,
+      "left": 172.8,
+      "attrs": { "value": "10000" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
+    [ "btn1:1.l", "esp:D5", "green", [ "h-28.8", "v-28.8" ] ],
+    [ "esp:GND.1", "btn1:2.l", "black", [ "h0" ] ],
+    [ "r1:1", "btn1:1.l", "green", [ "h-9.6", "v48" ] ],
+    [ "r1:2", "esp:3V3", "green", [ "v0", "h8.4", "v96" ] ]
+  ],
+  "dependencies": {}
+}
