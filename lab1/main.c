@@ -1,85 +1,93 @@
 #include <stdio.h>
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
-#include "esp_timer.h"
+#include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <esp_log.h>
+#include <esp_timer.h>
 
-// пины
-#define BUTTON_PIN GPIO_NUM_5
-#define DEBOUNCE_TIME_MS 50
-#define DOUBLE_CLICK_TIME_MS 200  
+static esp_timer_handle_t debounce_timer = NULL;
+static esp_timer_handle_t double_click_timer = NULL;
+static uint32_t debounce_time = 10000;
+static uint32_t click_count = 0;
+static uint32_t last_click_time = 0;
+static uint32_t double_click_timeout = 1000000;
 
-static int64_t last_click_time = 0;
-static int click_count = 0;
-static QueueHandle_t gpio_evt_queue = NULL;
-static uint8_t last_button_state = 1; // нач сост
+static void debounceTimer(void* args) {
+    gpio_intr_disable(GPIO_NUM_5);
+    uint32_t current_state = gpio_get_level(GPIO_NUM_5);
 
-// Прерывания
-static void IRAM_ATTR gpio_isr_handler(void* arg) {
-    uint32_t gpio_num = (uint32_t)arg;
-    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
-}
-
-static void button_task(void* arg) {
-    uint32_t io_num;
-    int64_t current_time;
-    uint8_t current_state;
-    
-    while(1) {
-        if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-            current_time = esp_timer_get_time() / 1000; // время в мс
-            current_state = gpio_get_level(BUTTON_PIN);
+    if (current_state == 0) {
+        uint64_t current_time = esp_timer_get_time();
+        
+        if ((current_time - last_click_time) > debounce_time) {
+            click_count++;
             
-            //даблкличит
-            if(current_time - last_click_time < DEBOUNCE_TIME_MS) {
-                continue; 
-            }
-            
-            if(last_button_state == 1 && current_state == 0) {
-                printf("Кнопка нажата, клик %d\n", click_count + 1);
-                
-                if(current_time - last_click_time < DOUBLE_CLICK_TIME_MS) {
-                    click_count++;
-                } else {
-                    click_count = 1;
-                }
-                
-                last_click_time = current_time;
-                
-                // даблклик текст
-                if(click_count == 2) {
-                    printf("Двойной клик!\n");
+            if (click_count == 1) {
+                esp_timer_start_once(double_click_timer, double_click_timeout);
+            } else if (click_count == 2) {
+                uint64_t click_interval = current_time - last_click_time;
+                if (click_interval < double_click_timeout) {
+                    ESP_LOGW("MAIN", "Double click detected! Interval: %llu us", click_interval);
                     click_count = 0;
+                    esp_timer_stop(double_click_timer);
                 }
             }
-            last_button_state = current_state;
+            
+            last_click_time = current_time;
+            ESP_LOGI("MAIN", "Click count: %d", click_count);
         }
     }
+
+    gpio_intr_enable(GPIO_NUM_5);
 }
 
-void app_main() {
-    // Настройка GPIO
+static void doubleClickTimeout(void* args) {
+    if (click_count == 1) {
+        ESP_LOGI("MAIN", "Single click detected");
+    }
+    click_count = 0;
+}
+
+static void gpioISRHandle(void* args) {
+    gpio_intr_disable(GPIO_NUM_5);
+    esp_timer_start_once(debounce_timer, debounce_time);
+}
+
+void app_main(void)
+{
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << BUTTON_PIN),
+        .pin_bit_mask = (1ULL << GPIO_NUM_5),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE // Прерывание по спадающему фронту
+        .intr_type = GPIO_INTR_ANYEDGE
     };
     gpio_config(&io_conf);
-    
-    // Инициализируем начальное состояние
-    last_button_state = gpio_get_level(BUTTON_PIN);
-    
-    // Создаем очередь для событий GPIO
-    gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
-    
-    // Устанавливаем обработчик прерывания
+
+    // Create debounce timer
+    esp_timer_create_args_t debounce_tmr_cfg = {
+        .callback = debounceTimer,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "debounce",
+        .skip_unhandled_events = false
+    };
+    esp_timer_create(&debounce_tmr_cfg, &debounce_timer);
+
+    // Create double click timeout timer
+    esp_timer_create_args_t dbl_click_tmr_cfg = {
+        .callback = doubleClickTimeout,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "dblclick",
+        .skip_unhandled_events = false
+    };
+    esp_timer_create(&dbl_click_tmr_cfg, &double_click_timer);
+
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(BUTTON_PIN, gpio_isr_handler, (void*)BUTTON_PIN);
-    
-    // Создаем задачу для обработки кнопки
-    xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
-    printf("Старт\n");
+    gpio_isr_handler_add(GPIO_NUM_5, gpioISRHandle, NULL);
+    gpio_intr_enable(GPIO_NUM_5);
+
+    ESP_LOGI("MAIN", "Double click detector started");
+    ESP_LOGI("MAIN", "Double click timeout: %d ms", double_click_timeout / 1000);
 }
