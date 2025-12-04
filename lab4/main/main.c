@@ -10,18 +10,18 @@
 #define ENC_DT 5
 #define ENC_SW 16
 
-#define BTN_DEBOUNCE 40       // антидребезг кнопки
-#define ENC_DEBOUNCE 2        // антидребезг энкодера
+#define BTN_DEBOUNCE 40
+#define ENC_DEBOUNCE 2
 
 #define SERVO_MIN_US 500
 #define SERVO_MAX_US 2500
 
 typedef enum {
-    MODE_RUN = 0,   // обычное движение между min и max
-    MODE_CW,        // движение только по часовой
-    MODE_CCW,       // движение против часовой
-    MODE_MIN,       // установка минимума
-    MODE_MAX        // установка максимума
+    MODE_RUN = 0,
+    MODE_CW,
+    MODE_CCW,
+    MODE_MIN,   // теперь "качание 40–120"
+    MODE_MAX    // теперь "качание 10–150"
 } mode_t;
 
 static volatile mode_t mode = MODE_RUN;
@@ -29,8 +29,8 @@ static volatile mode_t mode = MODE_RUN;
 // параметры
 static int speed_cw  = 5;
 static int speed_ccw = 5;
-static int min_angle = 30;
-static int max_angle = 150;
+static int min_angle = 0;
+static int max_angle = 180;
 static int angle     = 90;
 static bool forward  = true;
 
@@ -80,7 +80,7 @@ static void servo_set_angle(int a) {
 }
 
 //---------------------------------------------
-// BUTTON with debounce
+// BUTTON WITH DEBOUNCE
 //---------------------------------------------
 bool button_pressed() {
     int current = gpio_get_level(ENC_SW);
@@ -92,12 +92,9 @@ bool button_pressed() {
     }
 
     if (current == 0 && (now - last_btn_time) > BTN_DEBOUNCE) {
-        while (gpio_get_level(ENC_SW) == 0) {
-            vTaskDelay(1);
-        }
+        while (gpio_get_level(ENC_SW) == 0) vTaskDelay(1);
         return true;
     }
-
     return false;
 }
 
@@ -145,6 +142,7 @@ void app_main() {
         if (button_pressed()) {
             mode = (mode + 1) % 5;
             printf("[MODE] %d\n", mode);
+            forward = true;   // сброс направления при смене режима
         }
 
         // --- ENCODER ADJUSTMENTS ---
@@ -163,26 +161,13 @@ void app_main() {
                     if (speed_ccw > 20) speed_ccw = 20;
                     break;
 
-                case MODE_MIN:
-                    min_angle += dir;
-                    if (min_angle < 0) min_angle = 0;
-                    if (min_angle > max_angle - 5) min_angle = max_angle - 5;
-                    break;
-
-                case MODE_MAX:
-                    max_angle += dir;
-                    if (max_angle > 180) max_angle = 180;
-                    if (max_angle < min_angle + 5) max_angle = min_angle + 5;
-                    break;
-
                 default:
-                    break;
+                    break;  // в mode 3 и 4 энкодер ничего не регулирует
             }
         }
 
         // --- SERVO MOVEMENT ---
         uint32_t now = millis();
-
         if (now - last_move > 30) {
             last_move = now;
 
@@ -211,10 +196,32 @@ void app_main() {
                     servo_set_angle(angle);
                     break;
 
-                case MODE_MIN:
-                case MODE_MAX:
+                // --- NEW SPECIAL MODES ---
+                case MODE_MIN: {   // качание 40–120
+                    int lo = 40, hi = 120;
+                    if (forward) {
+                        angle += speed_cw;
+                        if (angle >= hi) { angle = hi; forward = false; }
+                    } else {
+                        angle -= speed_ccw;
+                        if (angle <= lo) { angle = lo; forward = true; }
+                    }
                     servo_set_angle(angle);
-                    break;
+                }
+                break;
+
+                case MODE_MAX: {   // качание 10–150
+                    int lo = 10, hi = 150;
+                    if (forward) {
+                        angle += speed_cw;
+                        if (angle >= hi) { angle = hi; forward = false; }
+                    } else {
+                        angle -= speed_ccw;
+                        if (angle <= lo) { angle = lo; forward = true; }
+                    }
+                    servo_set_angle(angle);
+                }
+                break;
             }
         }
 
